@@ -1,0 +1,188 @@
+name: Build Shanghai-Shenzhen top50 turnover concentration from TDX
+
+on:
+  push:
+    branches:
+      - chatgpt/top50-concentration-20260806
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl requests
+
+      - name: Download official TDX Shanghai-Shenzhen daily archive
+        run: |
+          mkdir -p data output_tdx
+          python - <<'PY'
+          import requests
+          from pathlib import Path
+
+          urls = [
+              "https://data.tdx.com.cn/vipdoc/hsjday.zip",
+              "https://www.tdx.com.cn/products/data/data/vipdoc/hsjday.zip",
+          ]
+          dest = Path("data/hsjday.zip")
+          last = None
+          for url in urls:
+              try:
+                  with requests.get(url, stream=True, timeout=180, headers={"User-Agent":"Mozilla/5.0"}) as r:
+                      r.raise_for_status()
+                      with dest.open("wb") as f:
+                          for chunk in r.iter_content(8 * 1024 * 1024):
+                              if chunk:
+                                  f.write(chunk)
+                  if dest.stat().st_size > 100_000_000:
+                      print("downloaded", url, dest.stat().st_size)
+                      break
+                  raise RuntimeError(f"archive unexpectedly small: {dest.stat().st_size}")
+              except Exception as exc:
+                  last = exc
+                  dest.unlink(missing_ok=True)
+          else:
+              raise RuntimeError(f"all TDX download URLs failed: {last}")
+          PY
+
+      - name: Parse and aggregate top50 concentration
+        run: |
+          python - <<'PY'
+          import csv
+          import heapq
+          import json
+          import math
+          import struct
+          import zipfile
+          from collections import defaultdict
+          from pathlib import Path
+          import pandas as pd
+
+          archive = Path("data/hsjday.zip")
+          out = Path("output_tdx")
+          RECORD_SIZE = 32
+          FORMAT = "<IIIIIfII"
+          start_date = 20141114
+
+          # Daily aggregates. heap contains the 50 largest (amount, code) pairs.
+          daily_total = defaultdict(float)
+          daily_count = defaultdict(int)
+          daily_positive = defaultdict(int)
+          daily_heap = defaultdict(list)
+          file_count = 0
+          row_count = 0
+          bad_amount_count = 0
+
+          def stock_code_from_member(member: str):
+              name = member.replace("\\", "/").split("/")[-1].lower()
+              if not name.endswith(".day"):
+                  return None
+              base = name[:-4]
+              if len(base) != 8 or base[:2] not in {"sh", "sz"} or not base[2:].isdigit():
+                  return None
+              market, code = base[:2], base[2:]
+              # Ordinary A shares only. Excludes indices, B shares, funds, bonds and warrants.
+              if market == "sh" and code.startswith("6"):
+                  return f"{code}.SH"
+              if market == "sz" and (code.startswith("00") or code.startswith("30")):
+                  return f"{code}.SZ"
+              return None
+
+          with zipfile.ZipFile(archive) as zf:
+              members = [m for m in zf.namelist() if stock_code_from_member(m)]
+              print("ordinary A-share files:", len(members))
+              for member in members:
+                  code = stock_code_from_member(member)
+                  raw = zf.read(member)
+                  file_count += 1
+                  usable = len(raw) - len(raw) % RECORD_SIZE
+                  for offset in range(0, usable, RECORD_SIZE):
+                      date_int, op, hi, lo, cl, amount, volume, reserved = struct.unpack_from(FORMAT, raw, offset)
+                      if date_int < start_date or date_int > 21000101:
+                          continue
+                      if not math.isfinite(amount) or amount < 0:
+                          bad_amount_count += 1
+                          continue
+                      date = str(date_int)
+                      daily_total[date] += float(amount)
+                      daily_count[date] += 1
+                      if amount > 0:
+                          daily_positive[date] += 1
+                      heap = daily_heap[date]
+                      item = (float(amount), code)
+                      if len(heap) < 50:
+                          heapq.heappush(heap, item)
+                      elif item > heap[0]:
+                          heapq.heapreplace(heap, item)
+                      row_count += 1
+
+          rows = []
+          detail_rows = []
+          dates = sorted(daily_total)
+          sample_idx = sorted(set([0, len(dates)//4, len(dates)//2, 3*len(dates)//4, len(dates)-1]))
+          sample_dates = {dates[i] for i in sample_idx}
+          for date in dates:
+              ranked = sorted(daily_heap[date], reverse=True)
+              top50_amount = sum(v for v, _ in ranked)
+              total = daily_total[date]
+              rows.append({
+                  "date": pd.to_datetime(date, format="%Y%m%d"),
+                  "total_amount_yuan": total,
+                  "eligible_stock_count": daily_count[date],
+                  "positive_amount_stock_count": daily_positive[date],
+                  "top50_amount_yuan": top50_amount,
+                  "top50_stock_count": len(ranked),
+                  "top50_share": top50_amount / total if total > 0 else None,
+                  "top50_share_pct": top50_amount / total * 100 if total > 0 else None,
+                  "source": "TDX official hsjday.zip",
+                  "scope_note": "Shanghai and Shenzhen ordinary A-share code ranges; current TDX archive may omit historically delisted securities.",
+              })
+              if date in sample_dates:
+                  for rank, (amount, code) in enumerate(ranked, 1):
+                      detail_rows.append({
+                          "date": pd.to_datetime(date, format="%Y%m%d"),
+                          "rank_by_amount": rank,
+                          "stock_code": code,
+                          "amount_yuan": amount,
+                      })
+
+          daily = pd.DataFrame(rows).sort_values("date")
+          details = pd.DataFrame(detail_rows).sort_values(["date", "rank_by_amount"])
+          daily.to_csv(out / "tdx_shsz_top50_turnover_concentration_daily.csv", index=False, encoding="utf-8-sig")
+          details.to_csv(out / "tdx_shsz_top50_turnover_sample_details.csv", index=False, encoding="utf-8-sig")
+          metadata = {
+              "source": "TDX official hsjday.zip",
+              "archive_size_bytes": archive.stat().st_size,
+              "ordinary_a_share_files": file_count,
+              "processed_records_since_2014_11_14": row_count,
+              "bad_amount_records": bad_amount_count,
+              "date_start": str(daily.date.min().date()),
+              "date_end": str(daily.date.max().date()),
+              "daily_rows": len(daily),
+              "latest_eligible_stock_count": int(daily.iloc[-1].eligible_stock_count),
+              "method": "For each date, sum the 50 largest ordinary-A-share turnover amounts and divide by total ordinary-A-share turnover.",
+              "known_limit": "The current TDX full archive may not retain all historically delisted securities; compare totals with an institutional source before production use."
+          }
+          (out / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+          with pd.ExcelWriter(out / "tdx_shsz_top50_turnover_concentration.xlsx", engine="openpyxl") as writer:
+              daily.to_excel(writer, sheet_name="daily_concentration", index=False)
+              details.to_excel(writer, sheet_name="sample_top50_details", index=False)
+              pd.DataFrame({"item": list(metadata.keys()), "value": list(metadata.values())}).to_excel(writer, sheet_name="metadata", index=False)
+          print(json.dumps(metadata, ensure_ascii=False, indent=2))
+          print(daily.tail())
+          PY
+
+      - name: Upload TDX result files
+        uses: actions/upload-artifact@v4
+        with:
+          name: tdx-shsz-top50-concentration
+          path: output_tdx/
+          retention-days: 7
