@@ -1,0 +1,132 @@
+name: Build A-share top50 turnover concentration
+
+on:
+  push:
+    branches:
+      - chatgpt/top50-concentration-20260806
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow openpyxl requests
+
+      - name: Download public A-share parquet
+        run: |
+          mkdir -p data output
+          python - <<'PY'
+          import requests
+          from pathlib import Path
+
+          url = "https://huggingface.co/datasets/ellendan/a-share-prices/resolve/refs%2Fconvert%2Fparquet/main_data/train/0000.parquet?download=true"
+          path = Path("data/a_share_prices.parquet")
+          with requests.get(url, stream=True, timeout=120) as response:
+              response.raise_for_status()
+              with path.open("wb") as f:
+                  for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                      if chunk:
+                          f.write(chunk)
+          print(path, path.stat().st_size)
+          PY
+
+      - name: Calculate daily top50 concentration
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          import pyarrow.parquet as pq
+          from pathlib import Path
+
+          source = Path("data/a_share_prices.parquet")
+          table = pq.read_table(source)
+          df = table.to_pandas()
+          print("columns:", list(df.columns))
+          print("rows:", len(df))
+
+          # Resolve expected columns conservatively.
+          lower = {str(c).lower(): c for c in df.columns}
+          date_col = next((lower[k] for k in ["date", "trade_date", "tradedate", "datetime"] if k in lower), None)
+          code_col = next((lower[k] for k in ["code", "symbol", "ts_code", "instrument"] if k in lower), None)
+          amount_col = next((lower[k] for k in ["amount", "money", "turnover", "total_turnover"] if k in lower), None)
+          if not all([date_col, code_col, amount_col]):
+              raise RuntimeError(f"Required columns not found: date={date_col}, code={code_col}, amount={amount_col}")
+
+          x = df[[date_col, code_col, amount_col]].copy()
+          x.columns = ["date", "stock_code", "amount"]
+          x["date"] = pd.to_datetime(x["date"], errors="coerce").dt.normalize()
+          x["stock_code"] = x["stock_code"].astype(str)
+          x["amount"] = pd.to_numeric(x["amount"], errors="coerce")
+          x = x.dropna(subset=["date", "stock_code", "amount"])
+          x = x[x["amount"] >= 0]
+          x = x[x["date"] >= pd.Timestamp("2014-11-14")]
+
+          # The source description identifies this as A-share price data. Keep all records
+          # present in the source and report daily security count for auditability.
+          x = x.sort_values(["date", "amount"], ascending=[True, False])
+          x["rank_by_amount"] = x.groupby("date").cumcount() + 1
+          x["is_top50"] = x["rank_by_amount"] <= 50
+
+          daily = x.groupby("date", as_index=False).agg(
+              total_amount=("amount", "sum"),
+              eligible_stock_count=("stock_code", "nunique"),
+              positive_amount_stock_count=("amount", lambda s: int((s > 0).sum())),
+          )
+          top50 = x[x["is_top50"]].groupby("date", as_index=False).agg(
+              top50_amount=("amount", "sum"),
+              top50_stock_count=("stock_code", "nunique"),
+          )
+          daily = daily.merge(top50, on="date", how="left")
+          daily["top50_share"] = daily["top50_amount"] / daily["total_amount"]
+          daily["top50_share_pct"] = daily["top50_share"] * 100
+          daily["source"] = "ellendan/a-share-prices (Hugging Face parquet conversion)"
+          daily["scope_note"] = "Scope follows source dataset; verify board coverage before calling it full-A-share."
+          daily = daily.sort_values("date")
+
+          details = x[x["is_top50"]][["date", "rank_by_amount", "stock_code", "amount"]].copy()
+          sample_dates = daily["date"].iloc[[0, len(daily)//4, len(daily)//2, 3*len(daily)//4, len(daily)-1]].drop_duplicates()
+          samples = details[details["date"].isin(sample_dates)].copy()
+
+          out = Path("output")
+          daily.to_csv(out / "a_share_top50_turnover_concentration_daily.csv", index=False, encoding="utf-8-sig")
+          samples.to_csv(out / "a_share_top50_turnover_sample_details.csv", index=False, encoding="utf-8-sig")
+          with pd.ExcelWriter(out / "a_share_top50_turnover_concentration.xlsx", engine="openpyxl") as writer:
+              daily.to_excel(writer, sheet_name="daily_concentration", index=False)
+              samples.to_excel(writer, sheet_name="sample_top50_details", index=False)
+              pd.DataFrame({
+                  "item": ["source", "source_rows", "date_start", "date_end", "resolved_date_column", "resolved_code_column", "resolved_amount_column", "method"],
+                  "value": [
+                      "ellendan/a-share-prices", len(df), daily["date"].min(), daily["date"].max(),
+                      str(date_col), str(code_col), str(amount_col),
+                      "For each date, sum 50 largest non-negative amount values divided by total amount."
+                  ]
+              }).to_excel(writer, sheet_name="metadata", index=False)
+
+          metadata = {
+              "source_rows": int(len(df)),
+              "processed_rows": int(len(x)),
+              "date_start": str(daily["date"].min().date()),
+              "date_end": str(daily["date"].max().date()),
+              "daily_rows": int(len(daily)),
+              "columns": list(map(str, df.columns)),
+              "resolved": {"date": str(date_col), "code": str(code_col), "amount": str(amount_col)},
+          }
+          (out / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(json.dumps(metadata, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload result files
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-top50-concentration
+          path: output/
+          retention-days: 7
