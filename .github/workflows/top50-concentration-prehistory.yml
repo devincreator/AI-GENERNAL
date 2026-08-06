@@ -1,0 +1,82 @@
+name: Build TDX top50 concentration prehistory
+
+on:
+  push:
+    branches:
+      - chatgpt/top50-concentration-20260806
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: pip install pandas requests
+      - name: Download and aggregate
+        run: |
+          mkdir -p output_prehistory
+          python - <<'PY'
+          import heapq, math, struct, zipfile, requests
+          from collections import defaultdict
+          from pathlib import Path
+          import pandas as pd
+
+          dest = Path('hsjday.zip')
+          urls = ['https://data.tdx.com.cn/vipdoc/hsjday.zip','https://www.tdx.com.cn/products/data/data/vipdoc/hsjday.zip']
+          for url in urls:
+              try:
+                  with requests.get(url, stream=True, timeout=180, headers={'User-Agent':'Mozilla/5.0'}) as r:
+                      r.raise_for_status()
+                      with dest.open('wb') as f:
+                          for chunk in r.iter_content(8*1024*1024):
+                              if chunk: f.write(chunk)
+                  if dest.stat().st_size > 100_000_000: break
+              except Exception:
+                  dest.unlink(missing_ok=True)
+          if not dest.exists(): raise RuntimeError('TDX archive download failed')
+
+          totals, counts, positives, heaps = defaultdict(float), defaultdict(int), defaultdict(int), defaultdict(list)
+          fmt, rec_size, start_date = '<IIIIIfII', 32, 20110802
+
+          def code_of(member):
+              name = member.replace('\\','/').split('/')[-1].lower()
+              if not name.endswith('.day'): return None
+              base = name[:-4]
+              if len(base)!=8 or base[:2] not in {'sh','sz'} or not base[2:].isdigit(): return None
+              market, code = base[:2], base[2:]
+              if market=='sh' and code.startswith('6'): return code+'.SH'
+              if market=='sz' and (code.startswith('00') or code.startswith('30')): return code+'.SZ'
+              return None
+
+          with zipfile.ZipFile(dest) as zf:
+              members=[m for m in zf.namelist() if code_of(m)]
+              for member in members:
+                  code=code_of(member); raw=zf.read(member); usable=len(raw)-len(raw)%rec_size
+                  for off in range(0,usable,rec_size):
+                      date_int,op,hi,lo,cl,amount,volume,res=struct.unpack_from(fmt,raw,off)
+                      if date_int<start_date or date_int>21000101 or not math.isfinite(amount) or amount<0: continue
+                      d=str(date_int); amount=float(amount)
+                      totals[d]+=amount; counts[d]+=1; positives[d]+=int(amount>0)
+                      h=heaps[d]; item=(amount,code)
+                      if len(h)<50: heapq.heappush(h,item)
+                      elif item>h[0]: heapq.heapreplace(h,item)
+
+          rows=[]
+          for d in sorted(totals):
+              top=sum(x[0] for x in heaps[d]); total=totals[d]
+              rows.append([pd.to_datetime(d,format='%Y%m%d'),total,counts[d],positives[d],top,len(heaps[d]),top/total if total else None,(top/total*100) if total else None])
+          df=pd.DataFrame(rows,columns=['date','total_amount_yuan','eligible_stock_count','positive_amount_stock_count','top50_amount_yuan','top50_stock_count','top50_share','top50_share_pct'])
+          df.to_csv('output_prehistory/tdx_shsz_top50_concentration_20110802_20260806.csv',index=False,encoding='utf-8-sig')
+          print(df.shape,df.date.min(),df.date.max(),df.tail())
+          PY
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: tdx-top50-concentration-prehistory
+          path: output_prehistory/
+          retention-days: 7
