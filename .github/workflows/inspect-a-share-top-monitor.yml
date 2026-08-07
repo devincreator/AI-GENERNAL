@@ -1,0 +1,110 @@
+name: Inspect A-share top monitor
+
+on:
+  push:
+    branches:
+      - chatgpt/inspect-a-share-top-monitor-20260807
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install chromium --with-deps >/dev/null 2>&1
+
+      - name: Inspect deployed page
+        env:
+          TARGET_URL: https://6a72ef4b5ab7ceed7c6b46fc--a-share-top-monitor.netlify.app/
+        run: |
+          mkdir -p inspection/assets
+          cat > /tmp/inspect.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+
+          (async () => {
+            const target = process.env.TARGET_URL;
+            const browser = await chromium.launch({headless:true});
+            const context = await browser.newContext({
+              viewport: { width: 1440, height: 1000 },
+              userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36'
+            });
+            const page = await context.newPage();
+            const network = [];
+            const consoleLines = [];
+            const saves = [];
+
+            page.on('console', msg => consoleLines.push(`${msg.type()}: ${msg.text()}`));
+            page.on('response', response => {
+              const p = (async () => {
+                const url = response.url();
+                const headers = response.headers();
+                const ct = headers['content-type'] || '';
+                network.push({url, status: response.status(), contentType: ct});
+                if (/javascript|text\/css|application\/json/.test(ct)) {
+                  try {
+                    const body = await response.body();
+                    const u = new URL(url);
+                    const ext = ct.includes('css') ? '.css' : ct.includes('json') ? '.json' : '.js';
+                    const base = path.basename(u.pathname).replace(/[^a-zA-Z0-9._-]/g, '_') || 'asset';
+                    const hash = crypto.createHash('sha1').update(url).digest('hex').slice(0,8);
+                    fs.writeFileSync(path.join('inspection/assets', `${hash}_${base}${base.endsWith(ext)?'':ext}`), body);
+                  } catch (e) {}
+                }
+              })();
+              saves.push(p);
+            });
+
+            const response = await page.goto(target, {waitUntil:'networkidle', timeout:120000});
+            await page.waitForTimeout(2000);
+            await Promise.allSettled(saves);
+
+            const meta = await page.evaluate(() => ({
+              title: document.title,
+              url: location.href,
+              htmlLang: document.documentElement.lang,
+              bodyText: document.body.innerText,
+              scripts: [...document.scripts].map(s => ({src:s.src, type:s.type, inlineLength:s.src?0:(s.textContent||'').length})),
+              stylesheets: [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.href),
+              meta: [...document.querySelectorAll('meta')].map(m => ({name:m.name, property:m.getAttribute('property'), content:m.content})),
+              links: [...document.querySelectorAll('a')].map(a => ({text:(a.innerText||'').trim(), href:a.href})).filter(x=>x.text||x.href),
+              buttons: [...document.querySelectorAll('button')].map(b => (b.innerText||'').trim()).filter(Boolean),
+              inputs: [...document.querySelectorAll('input,select,textarea')].map(el => ({tag:el.tagName, type:el.type, name:el.name, placeholder:el.placeholder})),
+              headings: [...document.querySelectorAll('h1,h2,h3,h4')].map(h => ({tag:h.tagName,text:(h.innerText||'').trim()})),
+              canvasCount: document.querySelectorAll('canvas').length,
+              svgCount: document.querySelectorAll('svg').length,
+              tableCount: document.querySelectorAll('table').length,
+              rootChildren: [...document.body.children].map(el => ({tag:el.tagName,id:el.id,className:el.className}))
+            }));
+
+            fs.writeFileSync('inspection/rendered.html', await page.content());
+            fs.writeFileSync('inspection/body.txt', meta.bodyText || '');
+            delete meta.bodyText;
+            meta.mainResponse = response ? {status:response.status(), headers:response.headers()} : null;
+            fs.writeFileSync('inspection/page-meta.json', JSON.stringify(meta,null,2));
+            fs.writeFileSync('inspection/network.json', JSON.stringify(network,null,2));
+            fs.writeFileSync('inspection/console.txt', consoleLines.join('\n'));
+            await page.screenshot({path:'inspection/full-page.png', fullPage:true});
+            await browser.close();
+          })().catch(err => { console.error(err); process.exit(1); });
+          JS
+          node /tmp/inspect.js
+          find inspection -maxdepth 2 -type f -printf '%p %s bytes\n' | sort > inspection/files.txt
+
+      - name: Upload inspection artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-top-monitor-inspection
+          path: inspection/
+          retention-days: 2
