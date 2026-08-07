@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A股顶部风险监测</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="top-inner">
+    <div class="brand">
+      <div class="eyebrow">A-SHARE TOP RISK MONITOR</div>
+      <h1>A股顶部风险监测</h1>
+      <div class="subtitle">结构风险 · 成交拥挤 · 杠杆冷却</div>
+    </div>
+    <div class="asof" id="asof">数据加载中</div>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-page="market">市场状态</button>
+    <button class="tab" data-page="strategy">策略与打分</button>
+    <button class="tab" data-page="backtest">真实回测</button>
+  </nav>
+</header>
+
+<main class="shell">
+<section class="page active" id="page-market">
+  <div class="section-head">
+    <div><div class="section-kicker">CURRENT MARKET STATUS</div><h2>当前市场状态</h2></div>
+    <div class="section-note">给客户看的结论页：先讲当前风险，再解释来源。</div>
+  </div>
+
+  <div class="status-grid">
+    <article class="card hero-status">
+      <div class="gauge" id="gauge"><div class="gauge-inner"><strong id="displayScore">--</strong><span>/100</span></div></div>
+      <div class="hero-copy">
+        <div class="micro">COMPOSITE MONITOR SCORE</div>
+        <h3 id="marketState">加载中</h3>
+        <p id="marketDesc"></p>
+        <div class="riskbar"><span></span></div>
+        <div class="risklabels"><b>正常</b><b>注意</b><b>偏高</b><b>高风险</b></div>
+      </div>
+    </article>
+
+    <div class="status-stack">
+      <article class="card metric-card blue">
+        <div><span>B/C结构风险</span><strong id="bcScore">--</strong></div>
+        <p>市场价格结构：波动、动量与高位风格退潮。</p>
+      </article>
+      <article class="card metric-card amber">
+        <div><span>C50资金拥挤</span><strong id="c50Score">--</strong></div>
+        <p id="c50Text">前50成交额集中度。</p>
+      </article>
+      <article class="card metric-card green">
+        <div><span>融资冷却分</span><strong id="finScore">--</strong></div>
+        <p id="finText">融资扩张是否已经降温。</p>
+      </article>
+    </div>
+  </div>
+
+  <div class="section-head compact"><div><div class="section-kicker">LATEST SIGNAL</div><h2>最新顶部风险信号</h2></div></div>
+  <article class="card signal-banner" id="signalBanner">
+    <div class="signal-date" id="signalDate">--</div>
+    <div class="signal-main"><span class="pill red">顶部风险窗口</span><h3 id="signalRoute">--</h3><p id="signalExplain">--</p></div>
+    <div class="signal-status"><span>当前结果</span><strong id="signalStatus">--</strong></div>
+  </article>
+
+  <div class="section-head compact"><div><div class="section-kicker">THREE-LAYER CHECK</div><h2>三层状态一眼看懂</h2></div></div>
+  <div class="three-grid">
+    <article class="card layer-card"><div class="step">1</div><h3>市场结构</h3><strong id="layer1">--</strong><p>B/C原始触发条件是否已经出现。</p></article>
+    <article class="card layer-card"><div class="step">2</div><h3>资金拥挤</h3><strong id="layer2">--</strong><p>C50是否确认B/C，或独立进入极端集中。</p></article>
+    <article class="card layer-card"><div class="step">3</div><h3>杠杆冷却</h3><strong id="layer3">--</strong><p>融资加速度是否回落到75%分位以下。</p></article>
+  </div>
+
+  <div class="client-note">
+    <b>客户解释：</b>这套模型不是预测“明天就是最高点”，而是判断未来约63个交易日是否进入重要顶部风险窗口。当前最新正式候选信号仍处于后续验证期。
+  </div>
+</section>
+
+<section class="page" id="page-strategy">
+  <div class="section-head">
+    <div><div class="section-kicker">MODEL LOGIC</div><h2>策略流程图</h2></div>
+    <div class="section-note">两条并列主线，最后统一经过融资冷却确认。</div>
+  </div>
+
+  <div class="flow-wrap card">
+    <div class="flow-source">每日收盘数据</div>
+    <div class="flow-split">
+      <div class="route route-a">
+        <div class="route-tag">主线 A</div>
+        <div class="flow-node"><b>B/C顶部结构</b><span>B或C满足原始硬条件并达到正式红灯</span></div>
+        <div class="arrow">↓</div>
+        <div class="flow-node"><b>C50确认门</b><span>B/C后10日内，20日集中变化的756日分位 ≥80%</span></div>
+      </div>
+      <div class="route route-b">
+        <div class="route-tag">主线 B</div>
+        <div class="flow-node"><b>C50独立预警</b><span>20日集中变化的504日分位 ≥90%，连续3日</span></div>
+        <div class="arrow">↓</div>
+        <div class="flow-node muted-node"><b>45日冷却</b><span>避免同一轮拥挤行情重复报警</span></div>
+      </div>
+    </div>
+    <div class="merge-arrow">两条主线取并集 ↓</div>
+    <div class="flow-node finance-node"><b>融资余额冷却确认</b><span>融资加速度756日分位 ≤75%直接通过；>75%最多等3个交易日，仍不降温则过滤</span></div>
+    <div class="arrow">↓</div>
+    <div class="flow-final">最终顶部风险预警</div>
+  </div>
+
+  <div class="section-head compact"><div><div class="section-kicker">SCORING STANDARD</div><h2>具体打分与硬触发标准</h2></div></div>
+  <div class="rules-grid">
+    <article class="card rule-card">
+      <div class="rule-title"><span class="letter b">B</span><div><h3>波动上升 + 动量转弱</h3><p>B/C原始触发条件保持不变</p></div></div>
+      <div id="bRules"></div>
+      <div class="hard-rule">正式硬条件：波动分位≥80% + 63日收益低于滚动中位数 + 5日收益&lt;0，并持续3日。</div>
+    </article>
+    <article class="card rule-card">
+      <div class="rule-title"><span class="letter c">C</span><div><h3>高位小盘宽度转弱</h3><p>指数仍在高位，但内部宽度恶化</p></div></div>
+      <div id="cRules"></div>
+      <div class="hard-rule">正式硬条件：距20日高点≤1%、距60日高点≤3%、小盘此前参与度足够，且20日相对收益由≥0转为&lt;0。</div>
+    </article>
+    <article class="card rule-card">
+      <div class="rule-title"><span class="letter x">50</span><div><h3>C50成交集中度</h3><p>既确认B/C，也可以独立预警</p></div></div>
+      <ul class="simple-list">
+        <li><b>确认B/C：</b>d20 = C50(t) - C50(t-20)，在此前756日分位 ≥80%，最多等待10日。</li>
+        <li><b>独立预警：</b>d20在此前504日分位 ≥90%，连续3日，45交易日冷却。</li>
+        <li><b>C50：</b>当日成交额最大的前50只普通A股 / 全部沪深普通A股成交额。</li>
+      </ul>
+    </article>
+    <article class="card rule-card">
+      <div class="rule-title"><span class="letter f">融</span><div><h3>融资余额冷却确认</h3><p>只做最终过滤，不单独触发顶部</p></div></div>
+      <div class="formula">G20 = (F<sub>t</sub>/F<sub>t-20</sub> − 1) / 20</div>
+      <div class="formula">G63 = (F<sub>t</sub>/F<sub>t-63</sub> − 1) / 63</div>
+      <div class="formula strong">融资加速度 = G20 − G63</div>
+      <ul class="simple-list">
+        <li>与此前756个交易日比较，计算因果历史分位。</li>
+        <li>分位 ≤75%：通过；&gt;75%：最多等待3日。</li>
+        <li>3日后仍&gt;75%：过滤该候选信号。</li>
+        <li>不用 ln；融资余额不是独立顶部触发器。</li>
+      </ul>
+    </article>
+  </div>
+
+  <div class="section-head compact"><div><div class="section-kicker">DISPLAY SCORE</div><h2>客户展示用综合监测分</h2></div></div>
+  <article class="card display-formula">
+    <div class="big-formula">综合监测分 = 50% × B/C结构分 + 30% × C50拥挤分 + 20% × 融资冷却分</div>
+    <div class="formula-grid">
+      <div><span>B/C结构分</span><b>0–100</b><p>取B/C平滑综合风险分。</p></div>
+      <div><span>C50拥挤分</span><b>0–100</b><p>取20日变化在历史窗口中的较高分位。</p></div>
+      <div><span>融资冷却分</span><b>100 − 加速度分位</b><p>融资越冷却，确认分越高。</p></div>
+    </div>
+    <p class="important">重要：这个综合分用于第一页和第三页的直观展示，不替代正式硬触发。正式信号仍严格按照上面的“B/C+C50 / C50独立 → 融资确认”流程产生。</p>
+  </article>
+</section>
+
+<section class="page" id="page-backtest">
+  <div class="section-head">
+    <div><div class="section-kicker">REAL BACKTEST</div><h2>真实测试命中情况</h2></div>
+    <div class="section-note">同一顶部定义、同一63交易日预测窗口；近期未成熟信号不算误报。</div>
+  </div>
+
+  <div class="metric-row">
+    <div class="card bt-metric"><span>成熟信号</span><strong>32</strong></div>
+    <div class="card bt-metric"><span>命中</span><strong>28</strong></div>
+    <div class="card bt-metric"><span>精确率</span><strong>87.5%</strong></div>
+    <div class="card bt-metric"><span>顶部覆盖</span><strong>29/34</strong></div>
+    <div class="card bt-metric"><span>召回率</span><strong>85.3%</strong></div>
+    <div class="card bt-metric"><span>F1</span><strong>86.4%</strong></div>
+  </div>
+
+  <article class="card chart-card">
+    <div class="chart-head"><div><h3>综合监测分 vs 中证全指</h3><p>可用连续评分区间：2023-07-12 ～ 2026-08-04</p></div><div class="legend"><span class="l-score">综合监测分</span><span class="l-index">中证全指</span><span class="l-signal">最终信号</span><span class="l-top">客观顶部</span></div></div>
+    <div class="chart-box"><canvas id="backtestChart"></canvas><div id="tooltip" class="tooltip"></div></div>
+    <div class="chart-note">综合监测分为展示用连续评分；正式历史信号仍由硬触发流程产生。图中红点为事后定义的客观顶部。</div>
+  </article>
+
+  <div class="section-head compact"><div><div class="section-kicker">MODEL COMPARISON</div><h2>每增加一层，回测发生了什么</h2></div></div>
+  <div class="card table-wrap"><table id="compareTable"></table></div>
+
+  <div class="split-grid">
+    <article class="card split-card"><div class="micro">DEVELOPMENT</div><h3>2014–2022 开发段</h3><div class="split-numbers"><b>86.4%</b><span>精确率</span><b>82.6%</b><span>召回率</span></div><p>22次成熟信号，19次命中，覆盖19/23个顶部。</p></article>
+    <article class="card split-card"><div class="micro">VALIDATION</div><h3>2023–2026 后段验证</h3><div class="split-numbers"><b>90.0%</b><span>精确率</span><b>90.9%</b><span>召回率</span></div><p>10次成熟信号，9次命中，覆盖10/11个顶部。</p></article>
+  </div>
+
+  <div class="section-head compact"><div><div class="section-kicker">ERROR ANALYSIS</div><h2>误报、漏报与融资过滤</h2></div></div>
+  <div class="error-grid">
+    <article class="card"><h3>最终仍有4次误报</h3><div id="falseList"></div></article>
+    <article class="card"><h3>仍漏掉5个顶部</h3><div id="missedList"></div></article>
+    <article class="card"><h3>融资过滤掉5条候选</h3><div id="filteredList"></div></article>
+  </div>
+
+  <div class="section-head compact"><div><div class="section-kicker">ALL SIGNALS</div><h2>全部成熟预警明细</h2></div><div class="filter-btns"><button class="smallbtn on" data-filter="all">全部</button><button class="smallbtn" data-filter="命中">命中</button><button class="smallbtn" data-filter="误报">误报</button></div></div>
+  <div class="card table-wrap"><table id="signalTable"></table></div>
+
+  <div class="section-head compact"><div><div class="section-kicker">OBJECTIVE TOPS</div><h2>全部34个客观顶部</h2></div></div>
+  <div class="card table-wrap"><table id="topTable"></table></div>
+
+  <div class="section-head compact"><div><div class="section-kicker">EVALUATION RULES</div><h2>回测评价口径</h2></div></div>
+  <div class="rules-mini">
+    <article class="card"><h3>顶部定义</h3><p>中证全指21交易日居中局部高点；随后最多252个交易日实际最大回撤达到15%以上。</p></article>
+    <article class="card"><h3>命中定义</h3><p>最终预警后63个交易日内出现客观顶部，则该成熟信号记为命中。</p></article>
+    <article class="card"><h3>召回定义</h3><p>34个客观顶部中，有最终信号在此前63个交易日覆盖的顶部数量 / 34。</p></article>
+    <article class="card"><h3>防未来函数</h3><p>C50和融资历史分位只使用当天以前的数据；未来数据只用于事后定义顶部和评价结果。</p></article>
+  </div>
+
+  <div class="backtest-warning">87.5% / 85.3% 是当前历史回测与参数研究后的点估计，不代表未来固定成功率。正式上线后应冻结参数，用新增数据做前向验证。</div>
+</section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
