@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   update:
@@ -28,9 +29,53 @@ jobs:
         run: |
           python scripts/bootstrap_site.py --site-dir site
 
+      - name: Restore last successful C50 cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f site/data/concentration.csv ]; then
+            echo 'Repository already contains a C50 cache.'
+            exit 0
+          fi
+          rm -rf /tmp/previous-site
+          mkdir -p /tmp/previous-site
+          for run_id in $(gh run list --workflow update-a-share-monitor.yml --branch agent/add-concentration-enhancement --limit 10 --json databaseId --jq '.[].databaseId'); do
+            if [ "$run_id" = "${{ github.run_id }}" ]; then
+              continue
+            fi
+            rm -rf /tmp/previous-site/*
+            if gh run download "$run_id" -n a-share-top-monitor-enhanced-site -D /tmp/previous-site >/dev/null 2>&1; then
+              cached=$(find /tmp/previous-site -name concentration.csv -print -quit)
+              if [ -n "$cached" ]; then
+                cp "$cached" site/data/concentration.csv
+                echo "Restored C50 cache from workflow run $run_id"
+                break
+              fi
+            fi
+          done
+          if [ ! -f site/data/concentration.csv ]; then
+            echo 'No previous C50 cache found; a live TDX download is required.'
+          fi
+
       - name: Refresh B/C base and C50 enhancement
         run: |
-          python scripts/update_dashboard.py --site-dir site
+          success=0
+          for attempt in 1 2; do
+            echo "Live TDX refresh attempt $attempt"
+            if python scripts/update_dashboard.py --site-dir site; then
+              success=1
+              break
+            fi
+            sleep $((attempt * 20))
+          done
+          if [ "$success" -ne 1 ]; then
+            if [ ! -f site/data/concentration.csv ]; then
+              echo 'TDX unavailable and no cached concentration data exists.' >&2
+              exit 1
+            fi
+            echo 'TDX temporarily unavailable; using last successful C50 cache.'
+            python scripts/update_dashboard.py --site-dir site --skip-tdx-download
+          fi
 
       - name: Validate generated dashboard
         run: |
