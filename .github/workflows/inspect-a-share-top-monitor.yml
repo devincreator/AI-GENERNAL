@@ -27,7 +27,7 @@ jobs:
           TARGET_URL: https://6a72ef4b5ab7ceed7c6b46fc--a-share-top-monitor.netlify.app/
         run: |
           mkdir -p inspection/assets
-          cat > /tmp/inspect.js <<'JS'
+          cat > inspect.js <<'JS'
           const { chromium } = require('playwright');
           const fs = require('fs');
           const path = require('path');
@@ -99,7 +99,7 @@ jobs:
             await browser.close();
           })().catch(err => { console.error(err); process.exit(1); });
           JS
-          node /tmp/inspect.js
+          node inspect.js
           find inspection -maxdepth 2 -type f -printf '%p %s bytes\n' | sort > inspection/files.txt
 
       - name: Upload inspection artifact
