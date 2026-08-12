@@ -28,3 +28,5 @@ GitHub Actions 工作流 `update-a-share-monitor.yml` 在合并到默认分支�
 - 若Netlify项目连接本仓库，数据提交后由 `netlify.toml` 自动重建静态壳并发布。
 - 若使用手工Netlify部署，可在仓库Secrets中配置 `NETLIFY_AUTH_TOKEN` 与 `NETLIFY_SITE_ID`；不要把密钥写入代码。
 - 当前原预览站点不在本对话已连接的Netlify账号中，因此首次切换到增强版需要一次站点连接/授权。
+
+<!-- refresh: 2026-08-12 -->
