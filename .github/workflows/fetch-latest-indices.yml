@@ -1,0 +1,34 @@
+name: Fetch latest A-share indices
+
+on:
+  push:
+    branches: [agent/add-concentration-enhancement]
+    paths:
+      - scripts/fetch_latest_indices.py
+      - .github/workflows/fetch-latest-indices.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch index closes
+        run: python scripts/fetch_latest_indices.py
+      - name: Show overlap and latest rows
+        run: tail -12 site/data/latest_indices.csv
+      - name: Commit data
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f site/data/latest_indices.csv
+          if git diff --cached --quiet; then
+            echo 'No index changes.'
+          else
+            git commit -m 'Refresh latest A-share index closes'
+            git push
+          fi
