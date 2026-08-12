@@ -1,0 +1,6 @@
+[build]
+  command = "python scripts/bootstrap_site.py --site-dir site"
+  publish = "site"
+
+[build.environment]
+  PYTHON_VERSION = "3.13"

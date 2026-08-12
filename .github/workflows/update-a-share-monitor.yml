@@ -1,0 +1,122 @@
+name: Update A-share concentration enhancement
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 19:30 China Standard Time, Monday-Friday. Scheduled workflows run on the default branch.
+    - cron: '30 11 * * 1-5'
+  push:
+    branches:
+      - agent/add-concentration-enhancement
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  update:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+      UPSTREAM_DASHBOARD_URL: ${{ vars.UPSTREAM_DASHBOARD_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build enhanced static shell
+        run: |
+          python scripts/bootstrap_site.py --site-dir site
+
+      - name: Restore last successful C50 cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f site/data/concentration.csv ]; then
+            echo 'Repository already contains a C50 cache.'
+            exit 0
+          fi
+          rm -rf /tmp/previous-site
+          mkdir -p /tmp/previous-site
+          for run_id in $(gh run list --workflow update-a-share-monitor.yml --branch agent/add-concentration-enhancement --limit 10 --json databaseId --jq '.[].databaseId'); do
+            if [ "$run_id" = "${{ github.run_id }}" ]; then
+              continue
+            fi
+            rm -rf /tmp/previous-site/*
+            if gh run download "$run_id" -n a-share-top-monitor-enhanced-site -D /tmp/previous-site >/dev/null 2>&1; then
+              cached=$(find /tmp/previous-site -name concentration.csv -print -quit)
+              if [ -n "$cached" ]; then
+                cp "$cached" site/data/concentration.csv
+                echo "Restored C50 cache from workflow run $run_id"
+                break
+              fi
+            fi
+          done
+          if [ ! -f site/data/concentration.csv ]; then
+            echo 'No previous C50 cache found; a live TDX download is required.'
+          fi
+
+      - name: Refresh B/C base and C50 enhancement
+        run: |
+          success=0
+          for attempt in 1 2; do
+            echo "Live TDX refresh attempt $attempt"
+            if python scripts/update_dashboard.py --site-dir site; then
+              success=1
+              break
+            fi
+            sleep $((attempt * 20))
+          done
+          if [ "$success" -ne 1 ]; then
+            if [ ! -f site/data/concentration.csv ]; then
+              echo 'TDX unavailable and no cached concentration data exists.' >&2
+              exit 1
+            fi
+            echo 'TDX temporarily unavailable; using last successful C50 cache.'
+            python scripts/update_dashboard.py --site-dir site --skip-tdx-download
+          fi
+
+      - name: Refresh latest index closes
+        run: python scripts/fetch_latest_indices.py
+
+      - name: Validate generated dashboard
+        run: |
+          python - <<'PY'
+          import csv,json
+          d=json.load(open('site/data/dashboard.json',encoding='utf-8'))
+          e=d['enhancement']; s=e['backtest']['summary']
+          assert s['precision'] >= 0.70, s
+          assert s['recall'] >= 0.70, s
+          assert e['current']['concentration']['date'] == e['concentration_data_asof']
+          rows=list(csv.DictReader(open('site/data/latest_indices.csv',encoding='utf-8-sig')))
+          assert rows[-1]['date'] >= '2026-08-12', rows[-1]
+          print('B/C upstream as-of:', d['meta']['data_asof'])
+          print('C50 as-of:', e['concentration_data_asof'])
+          print('Latest indices:', rows[-1])
+          PY
+
+      - name: Upload generated site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-top-monitor-enhanced-site
+          path: site/
+          retention-days: 7
+
+      - name: Commit scheduled refresh
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f site/data/dashboard.json site/data/concentration.csv site/data/tdx_indices.csv site/data/latest_indices.csv
+          if git diff --cached --quiet; then
+            echo 'No data changes.'
+          else
+            git commit -m 'Refresh A-share concentration dashboard data'
+            git push
+          fi
+
+      - name: Deploy to Netlify when credentials exist
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: |
+          npx --yes netlify-cli@latest deploy --prod --dir=site --site "$NETLIFY_SITE_ID" --auth "$NETLIFY_AUTH_TOKEN"
