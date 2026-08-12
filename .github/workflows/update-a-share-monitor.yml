@@ -77,19 +77,23 @@ jobs:
             python scripts/update_dashboard.py --site-dir site --skip-tdx-download
           fi
 
+      - name: Refresh latest index closes
+        run: python scripts/fetch_latest_indices.py
+
       - name: Validate generated dashboard
         run: |
           python - <<'PY'
-          import json
+          import csv,json
           d=json.load(open('site/data/dashboard.json',encoding='utf-8'))
-          e=d['enhancement']
-          s=e['backtest']['summary']
+          e=d['enhancement']; s=e['backtest']['summary']
           assert s['precision'] >= 0.70, s
           assert s['recall'] >= 0.70, s
           assert e['current']['concentration']['date'] == e['concentration_data_asof']
-          print('B/C as-of:', d['meta']['data_asof'])
+          rows=list(csv.DictReader(open('site/data/latest_indices.csv',encoding='utf-8-sig')))
+          assert rows[-1]['date'] >= '2026-08-12', rows[-1]
+          print('B/C upstream as-of:', d['meta']['data_asof'])
           print('C50 as-of:', e['concentration_data_asof'])
-          print('Enhanced:', s['precision'], s['recall'], s['f1'])
+          print('Latest indices:', rows[-1])
           PY
 
       - name: Upload generated site artifact
@@ -104,7 +108,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -f site/data/dashboard.json site/data/concentration.csv site/data/tdx_indices.csv
+          git add -f site/data/dashboard.json site/data/concentration.csv site/data/tdx_indices.csv site/data/latest_indices.csv
           if git diff --cached --quiet; then
             echo 'No data changes.'
           else
