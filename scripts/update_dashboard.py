@@ -65,6 +65,49 @@ def stock_code(member):
     return None
 
 
+INDEX_MEMBERS = {
+    'sh000985.day': 'all_a_close',
+    'sh000300.day': 'hs300_close',
+    'sh000852.day': 'zz1000_close',
+}
+
+def indices_from_tdx(zip_path):
+    series={v:{} for v in INDEX_MEMBERS.values()}
+    found={}
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.namelist():
+            base=member.replace('\\','/').split('/')[-1].lower()
+            col=INDEX_MEMBERS.get(base)
+            if not col:
+                continue
+            found[col]=member
+            raw=zf.read(member)
+            usable=len(raw)-len(raw)%RECORD_SIZE
+            for off in range(0,usable,RECORD_SIZE):
+                di,op,hi,lo,cl,amount,vol,res=struct.unpack_from(FORMAT,raw,off)
+                if di < 20110802 or di > 21000101 or cl <= 0:
+                    continue
+                d=datetime.strptime(str(di),'%Y%m%d').date()
+                series[col][d]=cl/100.0
+    missing=[col for col in INDEX_MEMBERS.values() if col not in found]
+    if missing:
+        raise RuntimeError(f'TDX index files missing: {missing}; found={found}')
+    common=sorted(set(series['all_a_close']) & set(series['hs300_close']) & set(series['zz1000_close']))
+    return [
+        {'date':d,'all_a_close':series['all_a_close'][d],
+         'hs300_close':series['hs300_close'][d],
+         'zz1000_close':series['zz1000_close'][d]}
+        for d in common
+    ]
+
+def write_indices_csv(rows,path):
+    Path(path).parent.mkdir(parents=True,exist_ok=True)
+    fields=['date','all_a_close','hs300_close','zz1000_close']
+    with open(path,'w',encoding='utf-8-sig',newline='') as f:
+        w=csv.DictWriter(f,fieldnames=fields); w.writeheader()
+        for r in rows:
+            x=dict(r); x['date']=r['date'].isoformat(); w.writerow(x)
+
 def concentration_from_tdx(zip_path):
     total={}; count={}; positive={}; heaps={}
     with zipfile.ZipFile(zip_path) as zf:
@@ -180,120 +223,49 @@ def evaluate(rows, signal_indices, tops, asof):
             details.append({'signal_date':dates[si].isoformat(),'status':'命中','matched_top':top_dates[k].isoformat(),'lead_trading_days':ti-si})
         elif si+63<=asof_idx:
             mature+=1; details.append({'signal_date':dates[si].isoformat(),'status':'误报','matched_top':None,'lead_trading_days':None})
-        else:
-            details.append({'signal_date':dates[si].isoformat(),'status':'待验证','matched_top':None,'lead_trading_days':None})
-    precision=hits/mature if mature else None; recall=len(covered)/len(top_dates) if top_dates else None
-    f1=2*precision*recall/(precision+recall) if precision is not None and recall is not None and precision+recall else None
-    return {'signals':mature,'hits':hits,'precision':precision,'tops':len(top_dates),'covered':len(covered),'recall':recall,'f1':f1,
-            'median_lead_trading_days': sorted(leads)[len(leads)//2] if leads else None, 'signal_details':details}
-
-
-def build_enhancement(base, rows):
-    asof=parse_date(base['meta']['data_asof'])
-    conc_asof=max(r['date'] for r in rows)
-    # Backtest only through B/C data as-of, so both inputs are contemporaneous.
-    mature_base=base.get('backtest',{}).get('signals',[])
-    gate,audit=gate_indices(rows,mature_base,.50,10)
-    overlays=overlay_indices(rows,asof,.90,3,45)
-    combined=sorted(gate+overlays)
-    summary=evaluate(rows,combined,base['backtest']['tops'],asof)
-    overlay_summary=evaluate(rows,overlays,base['backtest']['tops'],asof)
-    gate_summary=evaluate(rows,gate,base['backtest']['tops'],asof)
-    latest=rows[-1]
-    # Current gate uses the latest base signal, including pending signals.
-    all_base=list(mature_base)+list(base.get('backtest',{}).get('pending_signals',[]))
-    all_base=sorted(all_base,key=lambda x:x['signal_date'])
-    gate_current={'status':'unavailable','base_signal_date':None,'confirmation_date':None,'confirmation_percentile':None}
-    if all_base:
-        last_sig=all_base[-1]
-        si=next_index([r['date'] for r in rows],parse_date(last_sig['signal_date']))
-        conf=None
-        for j in range(si,min(si+10,len(rows))):
-            p=rows[j]['p40_252']
-            if p is not None and p>=.50: conf=j; break
-        if conf is not None:
-            gate_current={'status':'confirmed','base_signal_date':last_sig['signal_date'],'path':last_sig.get('path'),
-                          'confirmation_date':rows[conf]['date'].isoformat(),'confirmation_percentile':rows[conf]['p40_252'],'wait_days':conf-si}
-        elif len(rows)-si<10:
-            gate_current={'status':'waiting','base_signal_date':last_sig['signal_date'],'path':last_sig.get('path'),'confirmation_date':None,'confirmation_percentile':None,'wait_days':len(rows)-1-si}
-        else:
-            gate_current={'status':'filtered','base_signal_date':last_sig['signal_date'],'path':last_sig.get('path'),'confirmation_date':None,'confirmation_percentile':None,'wait_days':10}
-    overlay_all=overlay_indices(rows,rows[-1]['date'],.90,3,45)
-    streak=0
-    for r in reversed(rows):
-        if r['p20_504'] is not None and r['p20_504']>=.90: streak+=1
-        else: break
-    latest_overlay=rows[overlay_all[-1]]['date'].isoformat() if overlay_all else None
-    enhancement={
-      'version':'C50-gate50-overlay90-v1',
-      'data_source':'TDX official hsjday.zip',
-      'concentration_data_asof':conc_asof.isoformat(),
-      'rules':{
-        'concentration':'C50=当日沪深普通A股成交额前50只合计/普通A股总成交额',
-        'gate':'B/C预警后最多10个A股交易日；40日C50升幅在过去252日分位≥50%时确认，否则过滤',
-        'overlay':'20日C50升幅在过去504日分位≥90%，连续3个交易日；补充信号冷却45个交易日',
-        'combination':'确认后的B/C信号 ∪ 20日集中度补充信号',
-      },
-      'current':{
-        'concentration':{'date':latest['date'].isoformat(),'top50_share':latest['top50_share'],'top50_share_pct':latest['top50_share_pct'],
-                         'd20_change':latest['d20'],'d20_change_pp':latest['d20']*100 if latest['d20'] is not None else None,
-                         'p20_504':latest['p20_504'],'d40_change':latest['d40'],'d40_change_pp':latest['d40']*100 if latest['d40'] is not None else None,
-                         'p40_252':latest['p40_252']},
-        'gate':gate_current,
-        'overlay':{'threshold':.90,'confirm_days':3,'current_streak':streak,'triggered_now':streak>=3,
-                   'latest_signal_date':latest_overlay},
-      },
-      'backtest':{
-        'verified_for':base['meta'].get('model_version'),
-        'period':base['backtest'].get('period'),
-        'summary':summary,
-        'gate_only':gate_summary,
-        'overlay_only':overlay_summary,
-        'gate_audit':audit,
-        'note':'按当前网页B/C版本重新回测；与此前31次基线版本的80.5%/88.2%不可直接混用。'
-      },
-      'history':[{'date':r['date'].isoformat(),'top50_share':r['top50_share'],'p20_504':r['p20_504'],'p40_252':r['p40_252']} for r in rows if r['date']>=date(2023,1,1)]
-    }
-    return enhancement
+    p=hits/mature if mature else None; r=len(covered)/len(tops) if tops else None
+    f1=2*p*r/(p+r) if p is not None and r is not None and p+r else None
+    return {'signals':mature,'hits':hits,'precision':p,'tops':len(tops),'covered':len(covered),'recall':r,'f1':f1,
+            'median_lead_trading_days':sorted(leads)[len(leads)//2] if leads else None,'signal_details':details}
 
 
 def main():
-    ap=argparse.ArgumentParser()
-    ap.add_argument('--site-dir',default='site')
-    ap.add_argument('--base-json-file')
-    ap.add_argument('--concentration-csv')
-    ap.add_argument('--skip-tdx-download',action='store_true')
-    args=ap.parse_args()
-    site=Path(args.site_dir); (site/'data').mkdir(parents=True,exist_ok=True)
-    if args.base_json_file:
-        base=json.loads(Path(args.base_json_file).read_text(encoding='utf-8-sig')); upstream='local file'
+    ap=argparse.ArgumentParser(); ap.add_argument('--site-dir',default='site'); ap.add_argument('--skip-tdx-download',action='store_true'); args=ap.parse_args()
+    site=Path(args.site_dir); site.mkdir(parents=True,exist_ok=True); (site/'data').mkdir(parents=True,exist_ok=True)
+    upstream=os.environ.get('UPSTREAM_DASHBOARD_URL')
+    urls=[upstream] if upstream else UPSTREAM_URLS
+    try:
+        base,source=get_json(urls)
+    except Exception:
+        fallback=site/'data/base-dashboard.json'
+        if not fallback.exists(): fallback=site/'data/dashboard.json'
+        base=json.load(open(fallback,encoding='utf-8-sig')); source='local file'
+    if args.skip_tdx_download:
+        rows=read_concentration_csv(site/'data/concentration.csv'); tdx_source='cached concentration.csv'
     else:
-        urls=[os.environ.get('UPSTREAM_DASHBOARD_URL')] if os.environ.get('UPSTREAM_DASHBOARD_URL') else []
-        urls += UPSTREAM_URLS
-        try:
-            base,upstream=get_json(urls)
-        except Exception:
-            cached=site/'data/dashboard.json'
-            if not cached.exists(): raise
-            base=json.loads(cached.read_text(encoding='utf-8-sig'))
-            base.pop('enhancement',None)
-            upstream='local cached dashboard (upstream unavailable)'
-    if args.concentration_csv:
-        rows=read_concentration_csv(args.concentration_csv); tdx_source='existing concentration CSV'
-    elif args.skip_tdx_download and (site/'data/concentration.csv').exists():
-        rows=read_concentration_csv(site/'data/concentration.csv'); tdx_source='cached concentration CSV'
-    else:
-        z=site.parent/'hsjday.zip'; tdx_source=download(TDX_URLS,z); rows=concentration_from_tdx(z); write_concentration_csv(rows,site/'data/concentration.csv')
-        try: z.unlink()
-        except OSError: pass
+        z=site.parent/'hsjday.zip'; tdx_source=download(TDX_URLS,z); rows=concentration_from_tdx(z); write_concentration_csv(rows,site/'data/concentration.csv'); index_rows=indices_from_tdx(z); write_indices_csv(index_rows,site/'data/tdx_indices.csv')
     rows=add_features(rows)
-    base['enhancement']=build_enhancement(base,rows)
+    asof=parse_date(base['meta']['data_asof'])
+    tops=base['backtest']['tops']; mature_base=base['backtest']['signals']
+    gate,audit=gate_indices(rows,mature_base); overlay=overlay_indices(rows,asof)
+    union=sorted(set(gate)|set(overlay)); summary=evaluate(rows,union,tops,asof); gate_eval=evaluate(rows,gate,tops,asof); overlay_eval=evaluate(rows,overlay,tops,asof)
+    dates=[r['date'] for r in rows]; latest=len(rows)-1
+    last_base=base.get('backtest',{}).get('pending_signals',[])
+    last_base=(last_base[-1:] or mature_base[-1:])[0]
+    _,cur_audit=gate_indices(rows,[last_base])
+    oa=overlay_indices(rows,rows[-1]['date']); last_overlay=dates[oa[-1]].isoformat() if oa else None
+    streak=0
+    for r in reversed(rows):
+        if r['p20_504'] is not None and r['p20_504']>=.9: streak+=1
+        else: break
+    hist=[{'date':r['date'].isoformat(),'top50_share':r['top50_share'],'p20_504':r['p20_504'],'p40_252':r['p40_252']} for r in rows if r['date']>=date(2023,1,1)]
     base['meta']['generated_at_enhanced']=datetime.now(timezone(timedelta(hours=8))).isoformat(timespec='seconds')
-    base['meta']['upstream_dashboard']=upstream
-    base['meta']['enhancement_source']=tdx_source
-    (site/'data/dashboard.json').write_text(json.dumps(base,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
-    s=base['enhancement']['backtest']['summary']
-    print(json.dumps({'bc_asof':base['meta']['data_asof'],'concentration_asof':base['enhancement']['concentration_data_asof'],
-                      'precision':s['precision'],'recall':s['recall'],'f1':s['f1'],'signals':s['signals'],'hits':s['hits'],'covered':s['covered']},ensure_ascii=False,indent=2))
+    base['meta']['upstream_dashboard']=source; base['meta']['enhancement_source']=tdx_source
+    base['enhancement']={'version':'C50-gate50-overlay90-v1','data_source':'TDX official hsjday.zip','concentration_data_asof':rows[-1]['date'].isoformat(),
+      'rules':{'concentration':'C50=当日沪深普通A股成交额前50只合计/普通A股总成交额','gate':'B/C预警后最多10个A股交易日；40日C50升幅在过去252日分位≥50%时确认，否则过滤','overlay':'20日C50升幅在过去504日分位≥90%，连续3个交易日；补充信号冷却45个交易日','combination':'确认后的B/C信号 ∪ 20日集中度补充信号'},
+      'current':{'concentration':{'date':dates[latest].isoformat(),'top50_share':rows[latest]['top50_share'],'top50_share_pct':rows[latest]['top50_share_pct'],'d20_change':rows[latest]['d20'],'d20_change_pp':rows[latest]['d20']*100 if rows[latest]['d20'] is not None else None,'p20_504':rows[latest]['p20_504'],'d40_change':rows[latest]['d40'],'d40_change_pp':rows[latest]['d40']*100 if rows[latest]['d40'] is not None else None,'p40_252':rows[latest]['p40_252']},
+                 'gate':cur_audit[0] if cur_audit else None,'overlay':{'threshold':.9,'confirm_days':3,'current_streak':streak,'triggered_now':bool(oa and oa[-1]==latest),'latest_signal_date':last_overlay}},
+      'backtest':{'verified_for':base['meta'].get('model_version'),'period':{'start':MODEL_START.isoformat(),'mature_negative_end':base['backtest']['period']['mature_negative_end'],'data_end':asof.isoformat()},'summary':summary,'gate_only':gate_eval,'overlay_only':overlay_eval,'gate_audit':audit,'note':'按当前网页B/C版本重新回测；与此前31次基线版本的80.5%/88.2%不可直接混用。'},'history':hist}
+    json.dump(base,open(site/'data/dashboard.json','w',encoding='utf-8'),ensure_ascii=False,separators=(',',':'))
 
 if __name__=='__main__': main()
