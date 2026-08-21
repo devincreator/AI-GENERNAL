@@ -1,0 +1,35 @@
+name: Pesticide SWS Only
+
+on:
+  push:
+    branches: [pesticide-quick-build]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas requests xlrd openpyxl
+      - name: Fetch official SWS history
+        run: |
+          python - <<'PY'
+          import json
+          import pesticide_quick_v2 as m
+          try: s={'sws':m.build_sws()}
+          except Exception as e: s={'sws':{'error':f'{type(e).__name__}:{e}'}}
+          (m.OUT/'build_summary.json').write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(s,ensure_ascii=False,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pesticide-sws-only
+          path: artifact/
+          retention-days: 7
