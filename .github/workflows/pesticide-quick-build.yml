@@ -1,0 +1,33 @@
+name: Pesticide Quick Build
+
+on:
+  push:
+    branches: [pesticide-quick-build]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests openpyxl xlrd baostock lxml beautifulsoup4
+      - name: Fetch official membership and prices
+        run: python pesticide_quick_v2.py
+      - name: Upload quick artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pesticide-quick-build
+          path: artifact/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 7
