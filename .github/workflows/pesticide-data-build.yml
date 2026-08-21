@@ -3,6 +3,8 @@ name: Pesticide Data Build
 on:
   push:
     branches: [pesticide-data-build]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
