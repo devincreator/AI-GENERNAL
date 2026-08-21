@@ -19,21 +19,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests openpyxl xlrd akshare lxml beautifulsoup4
+          pip install pandas requests openpyxl xlrd baostock lxml beautifulsoup4
       - name: Fetch official membership and prices
-        run: |
-          python - <<'PY'
-          import json
-          from datetime import datetime
-          import pesticide_data_build as m
-          s={'started_at':datetime.now().isoformat()}
-          for name,fn in [('sws',m.build_sws),('prices',m.fetch_prices)]:
-              try: s[name]=fn()
-              except Exception as e: s[name]={'error':f'{type(e).__name__}:{e}'}
-          s['finished_at']=datetime.now().isoformat()
-          (m.OUT/'build_summary.json').write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding='utf-8')
-          print(json.dumps(s,ensure_ascii=False,indent=2))
-          PY
+        run: python pesticide_quick_v2.py
       - name: Upload quick artifact
         if: always()
         uses: actions/upload-artifact@v4
