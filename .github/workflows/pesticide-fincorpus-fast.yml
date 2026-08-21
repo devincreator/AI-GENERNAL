@@ -1,0 +1,42 @@
+name: Pesticide FinCorpus Fast
+
+on:
+  push:
+    branches: [pesticide-quick-build]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pandas requests
+      - name: Fetch FinCorpus announcement matches
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime
+          import pesticide_data_build as m
+          s={'started_at':datetime.now().isoformat()}
+          try: s['fincorpus']=m.fincorpus_search()
+          except Exception as e: s['fincorpus']={'error':f'{type(e).__name__}:{e}'}
+          s['finished_at']=datetime.now().isoformat()
+          (m.OUT/'build_summary.json').write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(s,ensure_ascii=False,indent=2))
+          PY
+      - name: Upload FinCorpus artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pesticide-fincorpus-fast
+          path: artifact/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 7
