@@ -3,6 +3,8 @@ name: Pesticide Quick Build
 on:
   push:
     branches: [pesticide-quick-build]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
