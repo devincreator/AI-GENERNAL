@@ -1,0 +1,33 @@
+name: Pesticide Data Build
+
+on:
+  push:
+    branches: [pesticide-data-build]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests openpyxl xlrd akshare pypdf lxml beautifulsoup4
+      - name: Run data build
+        run: python pesticide_data_build.py
+      - name: Upload research artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pesticide-data-build
+          path: artifact/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 7
